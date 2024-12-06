@@ -13,9 +13,9 @@
 
 #include "helper.h"
 
-__device__ __inline__ void reset(volatile int* d_flag,
-                                 int*          d_res,
-                                 int           init_value)
+__device__ __inline__ void reset_res(volatile int* d_flag,
+                                     int*          d_res,
+                                     int           init_value)
 {
     __threadfence();
     while (true) {
@@ -31,7 +31,7 @@ __device__ __inline__ void reset(volatile int* d_flag,
         // means this is the first threads to set the flag
         if (prv == 0) {
             __threadfence();
-            d_res[0] = init_value;
+            d_res[0] = init_value;            
             __threadfence();
             // set the flag to 2, so other threads stop spinning
             ::atomicExch((int*)d_flag, 2);
@@ -40,35 +40,53 @@ __device__ __inline__ void reset(volatile int* d_flag,
     }
 }
 
+__device__ __inline__ void reset_flag(volatile int* d_counter,
+                                      volatile int* d_flag,
+                                      int           size)
+{
+    __threadfence();
+    int id = atomicAdd((int*)d_counter, 1);
+    if (id == size - 1) {
+        // this is the last thread to contrinute so it can reset the counter and
+        // the flag
+        d_flag[0]    = 0;
+        d_counter[0] = 0;
+    }
+}
+
 __global__ void sum(int*          d_data,
                     int*          d_res,
                     volatile int* d_flag,
+                    volatile int* d_counter,
                     int           init_value,
-                    size_t        size)
+                    int           size)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
 
-    reset(d_flag, d_res, init_value);
+    reset_res(d_flag, d_res, init_value);
 
     if (idx < size) {
         atomicAdd(d_res, d_data[idx]);
+        reset_flag(d_counter, d_flag, size);
     }
 }
 
 __global__ void mmin(int*          d_data,
                      int*          d_res,
                      volatile int* d_flag,
+                     volatile int* d_counter,
                      int           init_value,
-                     size_t        size)
+                     int           size)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
 
-    reset(d_flag, d_res, init_value);
+    reset_res(d_flag, d_res, init_value);
 
     if (idx < size) {
         atomicMin(d_res, d_data[idx]);
+        reset_flag(d_counter, d_flag, size);
     }
 }
 
@@ -76,16 +94,18 @@ __global__ void mmin(int*          d_data,
 __global__ void mmax(int*          d_data,
                      int*          d_res,
                      volatile int* d_flag,
+                     volatile int* d_counter,
                      int           init_value,
-                     size_t        size)
+                     int           size)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
 
-    reset(d_flag, d_res, init_value);
+    reset_res(d_flag, d_res, init_value);
 
     if (idx < size) {
         atomicMax(d_res, d_data[idx]);
+        reset_flag(d_counter, d_flag, size);
     }
 }
 
@@ -135,7 +155,7 @@ void verify_max(thrust::host_vector<int>&   h_vec,
 int main(int argc, char** argv)
 {
 
-    size_t N = 10000;
+    int N = 10000;
     if (argc == 2) {
         N = std::atoi(argv[1]);
     }
@@ -148,22 +168,34 @@ int main(int argc, char** argv)
     std::random_device rd;
     std::mt19937       g(rd());
     std::shuffle(h_vec.begin(), h_vec.end(), g);
-        
+
     // Move data to the GPU
     thrust::device_vector<int> d_vec = h_vec;
 
-    // Create a result, flag -- uninitialized
+    // result, flag -- uninitialized
     thrust::device_vector<int> d_res(1);
     thrust::device_vector<int> d_flag(1);
+
+    // counter initilized to zero
+    thrust::device_vector<int> d_counter(1, 0);
 
 
     // Sum kernel launch
     const int threads = 512;
     const int blocks  = DIVIDE_UP(N, threads);
 
+    mmax<<<blocks, threads>>>(thrust::raw_pointer_cast(d_vec.data()),
+                              thrust::raw_pointer_cast(d_res.data()),
+                              thrust::raw_pointer_cast(d_flag.data()),
+                              thrust::raw_pointer_cast(d_counter.data()),
+                              std::numeric_limits<int>::lowest(),
+                              N);
+    verify_max(h_vec, d_res);
+
     sum<<<blocks, threads>>>(thrust::raw_pointer_cast(d_vec.data()),
                              thrust::raw_pointer_cast(d_res.data()),
                              thrust::raw_pointer_cast(d_flag.data()),
+                             thrust::raw_pointer_cast(d_counter.data()),
                              0,
                              N);
     verify_sum(h_vec, d_res);
@@ -172,17 +204,11 @@ int main(int argc, char** argv)
     mmin<<<blocks, threads>>>(thrust::raw_pointer_cast(d_vec.data()),
                               thrust::raw_pointer_cast(d_res.data()),
                               thrust::raw_pointer_cast(d_flag.data()),
+                              thrust::raw_pointer_cast(d_counter.data()),
                               std::numeric_limits<int>::max(),
                               N);
     verify_min(h_vec, d_res);
 
-
-    mmax<<<blocks, threads>>>(thrust::raw_pointer_cast(d_vec.data()),
-                              thrust::raw_pointer_cast(d_res.data()),
-                              thrust::raw_pointer_cast(d_flag.data()),
-                              std::numeric_limits<int>::lowest(),
-                              N);
-    verify_max(h_vec, d_res);
 
     CUDA_ERROR(cudaDeviceSynchronize());
 
