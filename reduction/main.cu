@@ -14,6 +14,7 @@
 #include "helper.h"
 
 __device__ __inline__ void reset_res(volatile int* d_flag,
+                                     volatile int* d_counter,
                                      int*          d_res,
                                      int           init_value)
 {
@@ -31,7 +32,8 @@ __device__ __inline__ void reset_res(volatile int* d_flag,
         // means this is the first threads to set the flag
         if (prv == 0) {
             __threadfence();
-            d_res[0] = init_value;            
+            d_res[0]     = init_value;
+            d_counter[0] = 0;
             __threadfence();
             // set the flag to 2, so other threads stop spinning
             ::atomicExch((int*)d_flag, 2);
@@ -64,7 +66,7 @@ __global__ void sum(int*          d_data,
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
 
-    reset_res(d_flag, d_res, init_value);
+    reset_res(d_flag, d_counter, d_res, init_value);
 
     if (idx < size) {
         atomicAdd(d_res, d_data[idx]);
@@ -82,7 +84,7 @@ __global__ void mmin(int*          d_data,
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
 
-    reset_res(d_flag, d_res, init_value);
+    reset_res(d_flag, d_counter, d_res, init_value);
 
     if (idx < size) {
         atomicMin(d_res, d_data[idx]);
@@ -101,7 +103,7 @@ __global__ void mmax(int*          d_data,
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
 
-    reset_res(d_flag, d_res, init_value);
+    reset_res(d_flag, d_counter, d_res, init_value);
 
     if (idx < size) {
         atomicMax(d_res, d_data[idx]);
@@ -172,12 +174,10 @@ int main(int argc, char** argv)
     // Move data to the GPU
     thrust::device_vector<int> d_vec = h_vec;
 
-    // result, flag -- uninitialized
+    // result, flag, d_counter -- uninitialized
     thrust::device_vector<int> d_res(1);
     thrust::device_vector<int> d_flag(1);
-
-    // counter initilized to zero
-    thrust::device_vector<int> d_counter(1, 0);
+    thrust::device_vector<int> d_counter(1);
 
 
     // Sum kernel launch
